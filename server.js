@@ -155,5 +155,11 @@ app.post('/webhook/all', async (req, res) => {
   res.status(200).send('Processed');
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+// Local එකේදි වැඩ කරන්න මේක තියන්න
+if (require.main === module) {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+}
+
+// Vercel එකට වැඩ කරන්න මේක අනිවාර්යයි
+module.exports = app;
