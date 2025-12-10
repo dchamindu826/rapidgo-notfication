@@ -20,8 +20,6 @@ const client = createClient({
 
 // Helper function to send notifications
 const sendNotifications = async (messages) => {
-  // Expo allows chunks, but separate projects must be handled separately logic-wise.
-  // We ensure messages passed here belong to the same batch logic.
   let chunks = expo.chunkPushNotifications(messages);
   for (let chunk of chunks) {
     try {
@@ -31,6 +29,19 @@ const sendNotifications = async (messages) => {
       console.error('❌ Error sending chunk:', error);
     }
   }
+};
+
+// --- (NEW) HELPER TO GET TOKEN ---
+// Webhook eken token eka awe nathnam, DB eken gannawa
+const getPushToken = async (refObject) => {
+    if (refObject?.pushToken) return refObject.pushToken; // Already thiyenawanam return karanawa
+    
+    if (refObject?._ref) {
+        // Reference ekak nam DB eken fetch karanawa
+        const doc = await client.fetch(`*[_id == $id][0]{pushToken}`, { id: refObject._ref });
+        return doc?.pushToken;
+    }
+    return null;
 };
 
 app.post('/webhook/all', async (req, res) => {
@@ -46,37 +57,40 @@ app.post('/webhook/all', async (req, res) => {
     // 1. FOOD ORDER LOGIC
     if (_type === 'foodOrder') {
       
+      // 👇 Token eka gannawa (Reference ekak unath, Object ekak unath wada karana widihata)
+      const restaurantToken = await getPushToken(restaurant);
+
       // A. New Order -> Restaurant (Partner App)
-      if (orderStatus === 'pending' && restaurant?.pushToken) {
-        console.log(`📦 New Order for: ${restaurant.name}`);
+      if (orderStatus === 'pending' && restaurantToken) {
+        console.log(`📦 New Order for Restaurant`);
         await sendNotifications([{
-          to: restaurant.pushToken,
+          to: restaurantToken,
           sound: 'default',
           title: '🔥 New Order Received!',
           body: 'You have a new order waiting for acceptance.',
           data: { orderId: _id, type: 'new_order' },
-          channelId: 'partner-alert', // Loop Sound Channel
+          channelId: 'partner-alert', 
         }]);
       }
 
       // B. Order Cancelled -> Restaurant (Partner App)
-      else if (orderStatus === 'cancelled' && restaurant?.pushToken) {
+      else if (orderStatus === 'cancelled' && restaurantToken) {
         console.log(`❌ Order Cancelled: ${_id}`);
         await sendNotifications([{
-          to: restaurant.pushToken,
+          to: restaurantToken,
           sound: 'default',
           title: 'Order Cancelled ❌',
           body: `Order #${_id.slice(-4).toUpperCase()} has been cancelled.`,
           data: { orderId: _id, type: 'order_cancelled' },
-          channelId: 'default', // Normal Sound
+          channelId: 'default', 
         }]);
       }
 
       // C. Order Completed -> Restaurant (Partner App)
-      else if (orderStatus === 'completed' && restaurant?.pushToken) {
+      else if (orderStatus === 'completed' && restaurantToken) {
         console.log(`✅ Order Completed: ${_id}`);
         await sendNotifications([{
-          to: restaurant.pushToken,
+          to: restaurantToken,
           sound: 'default',
           title: 'Order Delivered! 🎉',
           body: `Order #${_id.slice(-4).toUpperCase()} completed. Earnings: LKR ${foodTotal}`,
@@ -96,9 +110,9 @@ app.post('/webhook/all', async (req, res) => {
             to: r.pushToken,
             sound: 'default',
             title: 'New Order Available! 🚀',
-            body: `New order from ${restaurant?.name || 'Restaurant'} is ready.`,
+            body: `New order is ready for pickup.`,
             data: { orderId: _id, type: 'order_pool' },
-            channelId: 'order-pool', // Loop Sound Channel
+            channelId: 'order-pool', 
           }));
           await sendNotifications(messages);
         }
@@ -107,12 +121,14 @@ app.post('/webhook/all', async (req, res) => {
 
     // 2. WITHDRAWAL LOGIC
     else if (_type === 'withdrawalRequest') {
-      if ((status === 'completed' || status === 'declined') && rider?.pushToken) {
+      const riderToken = await getPushToken(rider); // 👇 Rider token ekath fetch karanawa
+
+      if ((status === 'completed' || status === 'declined') && riderToken) {
         const notifTitle = status === 'completed' ? 'Withdrawal Successful! 💰' : 'Withdrawal Declined ❌';
         const notifBody = status === 'completed' ? `LKR ${amount} has been transferred.` : `Request for LKR ${amount} was declined.`;
 
         await sendNotifications([{
-          to: rider.pushToken,
+          to: riderToken,
           sound: 'default',
           title: notifTitle,
           body: notifBody,
@@ -122,17 +138,17 @@ app.post('/webhook/all', async (req, res) => {
       }
     }
 
-    // 3. ANNOUNCEMENT LOGIC (FIXED: Split Sending)
+    // 3. ANNOUNCEMENT LOGIC
     else if (_type === 'announcement') {
       console.log(`📢 Announcement: ${title}`);
       
-      // --- PART 1: SEND TO RIDERS ---
+      // Send to Riders
       if (target === 'riders' || target === 'all') {
         const riders = await client.fetch(`*[_type == "rider" && defined(pushToken)].pushToken`);
         const uniqueRiders = [...new Set(riders)].filter(t => Expo.isExpoPushToken(t));
         
         if (uniqueRiders.length > 0) {
-             const riderMessages = uniqueRiders.map(t => ({
+            const riderMessages = uniqueRiders.map(t => ({
                 to: t,
                 sound: 'default',
                 title: title,
@@ -141,11 +157,10 @@ app.post('/webhook/all', async (req, res) => {
                 channelId: 'default',
             }));
             await sendNotifications(riderMessages);
-            console.log(`📢 Sent to ${uniqueRiders.length} Riders.`);
         }
       }
       
-      // --- PART 2: SEND TO PARTNERS ---
+      // Send to Partners
       if (target === 'partners' || target === 'all') {
         const restaurants = await client.fetch(`*[_type == "restaurant" && defined(pushToken)].pushToken`);
         const uniquePartners = [...new Set(restaurants)].filter(t => Expo.isExpoPushToken(t));
@@ -160,7 +175,6 @@ app.post('/webhook/all', async (req, res) => {
                 channelId: 'default',
             }));
             await sendNotifications(partnerMessages);
-            console.log(`📢 Sent to ${uniquePartners.length} Partners.`);
         }
       }
     }
