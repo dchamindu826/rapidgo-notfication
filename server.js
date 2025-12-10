@@ -18,7 +18,10 @@ const client = createClient({
   token: 'skkqogowsBDjKpQP5Vj8K7dGa2PQt9zo8IH2ZAuFVBYPQN1KA61TA0a6DFzeK1rYHjRMYaqVKcYIGixBKOhji8haEteOrwBDgBltybyirZAEyFOuzda5G8Dq7JllntpEakLKER7PYxqdnt1gWmbpwY6Sfcih5pUivas87w7tuCfpz2hynsZe' 
 });
 
+// Helper function to send notifications
 const sendNotifications = async (messages) => {
+  // Expo allows chunks, but separate projects must be handled separately logic-wise.
+  // We ensure messages passed here belong to the same batch logic.
   let chunks = expo.chunkPushNotifications(messages);
   for (let chunk of chunks) {
     try {
@@ -52,11 +55,11 @@ app.post('/webhook/all', async (req, res) => {
           title: '🔥 New Order Received!',
           body: 'You have a new order waiting for acceptance.',
           data: { orderId: _id, type: 'new_order' },
-          channelId: 'partner-alert', // High Priority Channel
+          channelId: 'partner-alert', // Loop Sound Channel
         }]);
       }
 
-      // B. Order Cancelled -> Restaurant (Partner App) - [NEW FIX]
+      // B. Order Cancelled -> Restaurant (Partner App)
       else if (orderStatus === 'cancelled' && restaurant?.pushToken) {
         console.log(`❌ Order Cancelled: ${_id}`);
         await sendNotifications([{
@@ -64,8 +67,8 @@ app.post('/webhook/all', async (req, res) => {
           sound: 'default',
           title: 'Order Cancelled ❌',
           body: `Order #${_id.slice(-4).toUpperCase()} has been cancelled.`,
-          data: { orderId: _id, type: 'order_cancelled' }, // New Type
-          channelId: 'default',
+          data: { orderId: _id, type: 'order_cancelled' },
+          channelId: 'default', // Normal Sound
         }]);
       }
 
@@ -82,7 +85,7 @@ app.post('/webhook/all', async (req, res) => {
         }]);
       }
 
-      // D. Order Pool (Ready for Pickup) -> Online Riders
+      // D. Order Pool -> Riders
       else if (orderStatus === 'readyForPickup') {
         const onlineRiders = await client.fetch(
           `*[_type == "rider" && availability == "online" && defined(pushToken) && !(_id in path("drafts.**"))] { pushToken }`
@@ -95,7 +98,7 @@ app.post('/webhook/all', async (req, res) => {
             title: 'New Order Available! 🚀',
             body: `New order from ${restaurant?.name || 'Restaurant'} is ready.`,
             data: { orderId: _id, type: 'order_pool' },
-            channelId: 'order-pool',
+            channelId: 'order-pool', // Loop Sound Channel
           }));
           await sendNotifications(messages);
         }
@@ -119,40 +122,46 @@ app.post('/webhook/all', async (req, res) => {
       }
     }
 
-    // 3. ANNOUNCEMENT LOGIC - [FIXED]
+    // 3. ANNOUNCEMENT LOGIC (FIXED: Split Sending)
     else if (_type === 'announcement') {
       console.log(`📢 Announcement: ${title}`);
-      let tokens = [];
-
-      // Fetch Rider Tokens
+      
+      // --- PART 1: SEND TO RIDERS ---
       if (target === 'riders' || target === 'all') {
         const riders = await client.fetch(`*[_type == "rider" && defined(pushToken)].pushToken`);
-        tokens = [...tokens, ...riders];
+        const uniqueRiders = [...new Set(riders)].filter(t => Expo.isExpoPushToken(t));
+        
+        if (uniqueRiders.length > 0) {
+             const riderMessages = uniqueRiders.map(t => ({
+                to: t,
+                sound: 'default',
+                title: title,
+                body: message,
+                data: { type: 'announcement' },
+                channelId: 'default',
+            }));
+            await sendNotifications(riderMessages);
+            console.log(`📢 Sent to ${uniqueRiders.length} Riders.`);
+        }
       }
       
-      // Fetch Partner Tokens
+      // --- PART 2: SEND TO PARTNERS ---
       if (target === 'partners' || target === 'all') {
         const restaurants = await client.fetch(`*[_type == "restaurant" && defined(pushToken)].pushToken`);
-        tokens = [...tokens, ...restaurants];
-      }
-
-      // Unique Tokens only
-      tokens = [...new Set(tokens)];
-
-      const messages = tokens
-        .filter(t => Expo.isExpoPushToken(t))
-        .map(t => ({
-          to: t,
-          sound: 'default',
-          title: title,
-          body: message,
-          data: { type: 'announcement' },
-          channelId: 'default',
-        }));
-
-      if (messages.length > 0) {
-        await sendNotifications(messages);
-        console.log(`📢 Sent announcement to ${messages.length} devices.`);
+        const uniquePartners = [...new Set(restaurants)].filter(t => Expo.isExpoPushToken(t));
+        
+        if (uniquePartners.length > 0) {
+            const partnerMessages = uniquePartners.map(t => ({
+                to: t,
+                sound: 'default',
+                title: title,
+                body: message,
+                data: { type: 'announcement' },
+                channelId: 'default',
+            }));
+            await sendNotifications(partnerMessages);
+            console.log(`📢 Sent to ${uniquePartners.length} Partners.`);
+        }
       }
     }
 
@@ -163,7 +172,6 @@ app.post('/webhook/all', async (req, res) => {
   res.status(200).send('Processed');
 });
 
-// Vercel Export
 if (require.main === module) {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
