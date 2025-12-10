@@ -10,7 +10,6 @@ const expo = new Expo();
 app.use(bodyParser.json());
 app.use(cors());
 
-// Sanity Client (Token එක අලුත් එකම තියෙන්න ඕන)
 const client = createClient({
   projectId: 'p0umau0m',
   dataset: 'production',
@@ -19,7 +18,6 @@ const client = createClient({
   token: 'skkqogowsBDjKpQP5Vj8K7dGa2PQt9zo8IH2ZAuFVBYPQN1KA61TA0a6DFzeK1rYHjRMYaqVKcYIGixBKOhji8haEteOrwBDgBltybyirZAEyFOuzda5G8Dq7JllntpEakLKER7PYxqdnt1gWmbpwY6Sfcih5pUivas87w7tuCfpz2hynsZe' 
 });
 
-// Helper: Notification Send Function
 const sendNotifications = async (messages) => {
   let chunks = expo.chunkPushNotifications(messages);
   for (let chunk of chunks) {
@@ -32,7 +30,6 @@ const sendNotifications = async (messages) => {
   }
 };
 
-// --- UNIVERSAL WEBHOOK HANDLER (මේ කොටස තමයි ඔයාට නැත්තේ) ---
 app.post('/webhook/all', async (req, res) => {
   const { 
     _type, _id, orderStatus, status, 
@@ -40,13 +37,13 @@ app.post('/webhook/all', async (req, res) => {
     restaurant, rider 
   } = req.body;
 
-  console.log(`🔔 Webhook Received: ${_type} | ID: ${_id}`);
+  console.log(`🔔 Webhook Received: ${_type} | ID: ${_id} | Status: ${orderStatus || status}`);
 
   try {
     // 1. FOOD ORDER LOGIC
     if (_type === 'foodOrder') {
       
-      // A. New Order -> Restaurant
+      // A. New Order -> Restaurant (Partner App)
       if (orderStatus === 'pending' && restaurant?.pushToken) {
         console.log(`📦 New Order for: ${restaurant.name}`);
         await sendNotifications([{
@@ -55,11 +52,24 @@ app.post('/webhook/all', async (req, res) => {
           title: '🔥 New Order Received!',
           body: 'You have a new order waiting for acceptance.',
           data: { orderId: _id, type: 'new_order' },
+          channelId: 'partner-alert', // High Priority Channel
+        }]);
+      }
+
+      // B. Order Cancelled -> Restaurant (Partner App) - [NEW FIX]
+      else if (orderStatus === 'cancelled' && restaurant?.pushToken) {
+        console.log(`❌ Order Cancelled: ${_id}`);
+        await sendNotifications([{
+          to: restaurant.pushToken,
+          sound: 'default',
+          title: 'Order Cancelled ❌',
+          body: `Order #${_id.slice(-4).toUpperCase()} has been cancelled.`,
+          data: { orderId: _id, type: 'order_cancelled' }, // New Type
           channelId: 'default',
         }]);
       }
 
-      // B. Order Completed -> Restaurant
+      // C. Order Completed -> Restaurant (Partner App)
       else if (orderStatus === 'completed' && restaurant?.pushToken) {
         console.log(`✅ Order Completed: ${_id}`);
         await sendNotifications([{
@@ -72,9 +82,8 @@ app.post('/webhook/all', async (req, res) => {
         }]);
       }
 
-      // C. Order Pool (Ready for Pickup) -> Online Riders
+      // D. Order Pool (Ready for Pickup) -> Online Riders
       else if (orderStatus === 'readyForPickup') {
-        console.log(`📡 Broadcasting to Order Pool: ${_id}`);
         const onlineRiders = await client.fetch(
           `*[_type == "rider" && availability == "online" && defined(pushToken) && !(_id in path("drafts.**"))] { pushToken }`
         );
@@ -84,14 +93,11 @@ app.post('/webhook/all', async (req, res) => {
             to: r.pushToken,
             sound: 'default',
             title: 'New Order Available! 🚀',
-            body: `New order from ${restaurant?.name || 'Restaurant'} is ready. Swipe to grab!`,
+            body: `New order from ${restaurant?.name || 'Restaurant'} is ready.`,
             data: { orderId: _id, type: 'order_pool' },
             channelId: 'order-pool',
           }));
           await sendNotifications(messages);
-          console.log(`Sent to ${onlineRiders.length} riders.`);
-        } else {
-          console.log('⚠️ No online riders found.');
         }
       }
     }
@@ -99,7 +105,6 @@ app.post('/webhook/all', async (req, res) => {
     // 2. WITHDRAWAL LOGIC
     else if (_type === 'withdrawalRequest') {
       if ((status === 'completed' || status === 'declined') && rider?.pushToken) {
-        console.log(`💸 Withdrawal Update: ${status}`);
         const notifTitle = status === 'completed' ? 'Withdrawal Successful! 💰' : 'Withdrawal Declined ❌';
         const notifBody = status === 'completed' ? `LKR ${amount} has been transferred.` : `Request for LKR ${amount} was declined.`;
 
@@ -114,22 +119,25 @@ app.post('/webhook/all', async (req, res) => {
       }
     }
 
-    // 3. ANNOUNCEMENT LOGIC
+    // 3. ANNOUNCEMENT LOGIC - [FIXED]
     else if (_type === 'announcement') {
       console.log(`📢 Announcement: ${title}`);
       let tokens = [];
 
+      // Fetch Rider Tokens
       if (target === 'riders' || target === 'all') {
         const riders = await client.fetch(`*[_type == "rider" && defined(pushToken)].pushToken`);
         tokens = [...tokens, ...riders];
       }
       
+      // Fetch Partner Tokens
       if (target === 'partners' || target === 'all') {
         const restaurants = await client.fetch(`*[_type == "restaurant" && defined(pushToken)].pushToken`);
         tokens = [...tokens, ...restaurants];
       }
 
-      tokens = [...new Set(tokens)]; // Remove duplicates
+      // Unique Tokens only
+      tokens = [...new Set(tokens)];
 
       const messages = tokens
         .filter(t => Expo.isExpoPushToken(t))
@@ -144,7 +152,7 @@ app.post('/webhook/all', async (req, res) => {
 
       if (messages.length > 0) {
         await sendNotifications(messages);
-        console.log(`📢 Sent to ${messages.length} devices.`);
+        console.log(`📢 Sent announcement to ${messages.length} devices.`);
       }
     }
 
@@ -155,11 +163,9 @@ app.post('/webhook/all', async (req, res) => {
   res.status(200).send('Processed');
 });
 
-// Local එකේදි වැඩ කරන්න මේක තියන්න
+// Vercel Export
 if (require.main === module) {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 }
-
-// Vercel එකට වැඩ කරන්න මේක අනිවාර්යයි
 module.exports = app;
