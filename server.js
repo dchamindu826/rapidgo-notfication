@@ -20,13 +20,14 @@ const client = createClient({
 
 // Helper function to send notifications
 const sendNotifications = async (messages) => {
-  let chunks = expo.chunkPushNotifications(messages);
-  for (let chunk of chunks) {
+  for (let message of messages) {
     try {
-      await expo.sendPushNotificationsAsync(chunk);
-      console.log('✅ Notification chunk sent!');
+      // එකින් එක check කරලා යවනවා
+      await expo.sendPushNotificationsAsync([message]);
+      console.log(`✅ Sent to: ${message.to}`);
     } catch (error) {
-      console.error('❌ Error sending chunk:', error);
+      // පරණ account එකේ ටෝකන් එකක් ආවොත් මෙතනින් skip වෙනවා
+      console.error(`❌ Skipped invalid token: ${message.to}`);
     }
   }
 };
